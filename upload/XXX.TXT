@@ -1,0 +1,620 @@
+================================================================================
+PAPERS — ANDROID APPLICATION TECHNICAL REFERENCE
+================================================================================
+Version: 1.0
+Package: com.papers.app
+APK:     /home/z/my-project/download/Papers.apk
+Size:    78 KB
+Min SDK: 21 (Android 5.0)
+Target:  30 (Android 11)
+
+
+--------------------------------------------------------------------------------
+1. PURPOSE
+--------------------------------------------------------------------------------
+
+Native Android application that browses and downloads research papers from
+sci-hub mirrors. On first launch the user picks a storage folder; the app
+auto-creates /track and /papers subfolders, fetches random papers from
+CrossRef, accepts a DOI or URL search, fetches sci-hub's related-paper
+list, solves the altcha proof-of-work captcha transparently, downloads
+PDFs with HTTP Range resumable transfers, and tracks which DOIs are
+already downloaded in rotating 100-paper JSON files.
+
+
+--------------------------------------------------------------------------------
+2. SOURCE FILES
+--------------------------------------------------------------------------------
+
+Project root:    /home/z/my-project/android-app/
+Source root:      /home/z/my-project/android-app/java/com/papers/app/
+Build script:     /home/z/my-project/android-app/build.sh
+
+Files:
+  AndroidManifest.xml            Manifest, permissions, launcher activity
+  res/values/strings.xml         App label ("Papers")
+  res/values/colors.xml          Halo dark palette constants
+  res/values/styles.xml          HaloTheme (Material.NoActionBar parent)
+  res/drawable/ic_launcher.xml   Dark-blue circle vector icon
+  java/com/papers/app/
+    MainActivity.java             UI, navigation, infinite scroll, download flow
+    TrackerStore.java             /track and /papers folders, JSON track files
+    SciHubClient.java             Altcha captcha solver, CrossRef, /similar
+    Downloader.java               Resumable HTTP downloader (Range headers)
+
+
+--------------------------------------------------------------------------------
+3. BUILD PIPELINE
+--------------------------------------------------------------------------------
+
+Toolchain locations (Debian 13):
+  JAVA_HOME     /home/z/apk-build/jdk-21           (Adoptium Temurin 21)
+  ANDROID_HOME  /home/z/apk-build/android-sdk
+  BUILD_TOOLS   $ANDROID_HOME/build-tools/34.0.0   (aapt2, zipalign, apksigner)
+  DX_TOOLS      $ANDROID_HOME/build-tools/30.0.3   (dx — NOT d8)
+  PLATFORM      $ANDROID_HOME/platforms/android-30/android.jar
+
+Critical rules followed by build.sh:
+  (1) javac -source 8 -target 8 -Xlint:-options
+      Android runtime cannot consume JDK 21 bytecode.
+  (2) dx from build-tools/30.0.3, never d8 from 34.0.0
+      d8 34.0.0 throws NullPointerException on javac-21 Java-8 output.
+  (3) DEX injected with `zip -u -0` (STORE method)
+      Unzip+rezip corrupts binary resources.
+  (4) zipalign before apksigner
+      Otherwise install fails with "problem parsing the package".
+
+Seven-step pipeline:
+  1.  javac -source 8 -target 8 → build/classes/*.class
+  2.  $DX_TOOLS/dx --dex → build/classes.dex
+  3.  $BUILD_TOOLS/aapt2 compile --dir res → build/res/compiled_res.flata
+  4.  $BUILD_TOOLS/aapt2 link -o build/app-unsigned.apk --manifest ... -R ...
+  5.  zip -u -0 build/app-unsigned.apk classes.dex
+  6.  $BUILD_TOOLS/zipalign -f 4 → build/app-aligned.apk
+  7.  $JAVA_HOME/bin/java -jar $BUILD_TOOLS/lib/apksigner.jar sign
+        --ks build/debug.keystore (RSA 2048, validity 10000 days,
+        storepass=android, alias=mykey)
+
+Rebuild command:
+  cd /home/z/my-project/android-app && ./build.sh
+
+
+--------------------------------------------------------------------------------
+4. ANDROID MANIFEST
+--------------------------------------------------------------------------------
+
+  package          com.papers.app
+  minSdkVersion    21
+  targetSdkVersion 30
+  android:exported="true"        (launcher activity — required on API 30+)
+  android:theme    @style/HaloTheme
+  android:icon     @drawable/ic_launcher
+  android:roundIcon @drawable/ic_launcher
+  android:usesCleartextTraffic="true"
+  android:requestLegacyExternalStorage="true"
+
+Permissions declared:
+  android.permission.INTERNET
+  android.permission.ACCESS_NETWORK_STATE
+  android.permission.READ_EXTERNAL_STORAGE
+  android.permission.WRITE_EXTERNAL_STORAGE
+  android.permission.MANAGE_EXTERNAL_STORAGE   (Android 11+)
+  android.permission.FOREGROUND_SERVICE
+
+MANAGE_EXTERNAL_STORAGE is requested via
+Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION on API 30+.
+On older versions, READ/WRITE_EXTERNAL_STORAGE is requested via
+checkSelfPermission + requestPermissions.
+
+
+--------------------------------------------------------------------------------
+5. STORAGE LAYOUT
+--------------------------------------------------------------------------------
+
+User-chosen root folder (persisted in SharedPreferences key "root_folder").
+On Android 11+ the user grants MANAGE_EXTERNAL_STORAGE then picks a tree
+via ACTION_OPEN_DOCUMENT_TREE; the SAF URI is converted back to a
+filesystem path so plain java.io.File operations work.
+
+Subfolders created automatically by TrackerStore.ensureSubdirs():
+
+  <root>/
+  ├── track/
+  │   ├── papers001.json    (DOIs 1-100)
+  │   ├── papers002.json    (DOIs 101-200)
+  │   ├── papers003.json    (DOIs 201-300)
+  │   └── ...
+  └── papers/
+      ├── 10.1146_annurev.soc.29.010202.100047.pdf
+      ├── 10.1146_annurev.psych.60.110707.163459.pdf
+      ├── 10.1146_annurev.psych.60.110707.163459.pdf.partial
+      │   (in-flight or interrupted download — resumable)
+      └── ...
+
+Track file format (papersNNN.json):
+  {
+    "papers": [
+      {
+        "doi":       "10.1146/annurev.soc.29.010202.100047",
+        "title":     "Relationships in Adolescence",
+        "filename":  "10.1146_annurev.soc.29.010202.100047.pdf",
+        "added_at":  1792040882000
+      },
+      ...
+    ]
+  }
+
+Rotation rule: when papersNNN.json contains 100 entries, the next write
+creates papers(NNN+1).json. TrackerStore.currentTrackFile() returns the
+first existing file with < 100 entries, or creates the next index.
+
+Lookup is O(N) across all track files — at most a few thousand entries
+total, so the scan is sub-millisecond on device.
+
+
+--------------------------------------------------------------------------------
+6. PREFERENCES
+--------------------------------------------------------------------------------
+
+SharedPreferences name: "papers" (MODE_PRIVATE)
+
+Keys:
+  root_folder       string    User-chosen root path (empty until first launch)
+  sci_hub_domain    string    Default: sci-hub.su
+
+TrackerStore.getBaseUrl() returns "https://" + getDomain().
+The Settings tab lets the user replace the domain at any time; the
+SciHubClient is rebuilt on the next network call.
+
+
+--------------------------------------------------------------------------------
+7. NETWORK FLOW — CAPTCHA SOLVER
+--------------------------------------------------------------------------------
+
+Class: com.papers.app.SciHubClient
+
+Constants:
+  UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
+        (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+
+7.1  resolvePdf(doi)  →  pdfUrl
+
+   Step 1.  GET  <base>/<doi>
+            Headers: User-Agent, Accept: text/html
+            Cookies captured: __ddg1_, __ddg8_, __ddg9_, __ddg10_,
+                              PHPSESSID, session, refresh
+            If the response is NOT a captcha interstitial (page lacks
+            "/captcha/challenge"), the page already contains the PDF
+            link and we skip to step 7.
+
+   Step 2.  Extract challenge ID from page HTML:
+              regex /captcha/challenge/(\d+)
+
+   Step 3.  GET  <base>/captcha/challenge/<id>
+            Headers: User-Agent, Cookie (from step 1), Accept: application/json
+            Response JSON:
+              {
+                "algorithm": "SHA-256",
+                "challenge": "<64-hex>",
+                "maxNumber": 200000,
+                "salt":      "<salt>?expires=<ts>&",
+                "signature": "<64-hex>"
+              }
+
+   Step 4.  Solve proof-of-work:
+            For n in [0 .. maxNumber]:
+              hash = SHA-256(salt + str(n))
+              if hash.startsWith(challenge):  solution = n
+            Typical solve time on device: 50-200 ms.
+
+   Step 5.  Build altcha payload (base64-encoded JSON):
+              {
+                "algorithm": "SHA-256",
+                "challenge": "<hash>",
+                "number":    n,
+                "salt":      "<salt>",
+                "signature": "<sig>",
+                "test":      false,
+                "took":      <ms>
+              }
+
+   Step 6.  POST <base>/captcha/solution/<id>
+            Headers: User-Agent, Content-Type: application/json,
+                     Accept: application/json, Cookie (merged),
+                     Referer: <base>/<doi>, Origin: <base>
+            Body:   { "captcha": "<base64-payload>" }
+            Expected response: { "success": true }
+
+   Step 7.  GET  <base>/<doi>  (reload with verified session cookie)
+            Headers: User-Agent, Cookie, Referer: <base>/<doi>,
+                     Accept: text/html
+            Extract PDF URL from response HTML (see §7.4).
+
+7.2  fetchRelated(doi)  →  List<Paper>
+
+   GET <base>/similar/<doi>
+   If response contains "/captcha/challenge":
+     Solve captcha via steps 2-6 above (using the similar URL as Referer)
+     Retry GET on /similar/<doi> with verified cookie.
+   Parse the <a class="article"> blocks (see §7.5).
+   Returns up to ~187 related papers.
+
+7.3  CrossRef calls (no captcha)
+
+   lookupDoi(doi):
+     GET https://api.crossref.org/works/<urlencoded doi>
+     Returns: Paper with doi, title, journal, year, authors, abstract.
+
+   fetchRandom(n):
+     GET https://api.crossref.org/works?sample=<n>
+         &select=DOI,title,author,container-title,published,abstract,type,publisher
+     cache: no-store  (each call returns a different random batch)
+     n capped at 100 by CrossRef's sample endpoint.
+
+7.4  PDF URL extraction (in order of preference)
+     1.  class="download"><a href="...">
+     2.  <meta name="citation_pdf_url" content="...">
+     3.  /storage/[^"'\s<>]+\.pdf
+     Relative URLs converted to absolute using <base>.
+
+7.5  Similar-page article block parser
+
+   Regex: <a[^>]*class\s*=\s*"article"[^>]*>([\s\S]*?)</a>
+   Per block, extract:
+     href        → DOI  (strip leading "/")
+     <div class="title">      → title
+     <span class="journal">   → journal
+     <span class="year">      → year
+     <div class="abstract">   → abstract
+   HTML stripped via regex <[^>]+> then entity-decoded.
+
+7.6  DOI input parser (SciHubClient.parseDoiInput)
+
+   Pattern: \b10\.\d{4,9}/[^\s"<>]+
+   Accepts bare DOI, https://doi.org/<doi>,
+   https://sci-hub.su/<doi>, or any URL containing a DOI.
+   Trailing punctuation [.,;)] stripped.
+
+
+--------------------------------------------------------------------------------
+8. DOWNLOAD PIPELINE — RESUMABLE
+--------------------------------------------------------------------------------
+
+Class: com.papers.app.Downloader
+Executor: Executors.newFixedThreadPool(2)
+
+8.1  download(doi, title, pdfUrl)
+
+   Path: <root>/papers/<safeFilename(doi)>.pdf
+   Partial: <root>/papers/<safeFilename(doi)>.pdf.partial
+   safeFilename: doi.replaceAll("[^A-Za-z0-9._-]", "_")
+
+   If target .pdf exists:
+     Already complete — call tracker.markDownloaded() and return.
+   Else:
+     startPos = (partial exists) ? partial.length() : 0
+     Open HttpURLConnection:
+       Request: GET <pdfUrl>
+       Headers:
+         User-Agent: <UA>
+         Accept: */*
+         Range: bytes=<startPos>-     (only if startPos > 0)
+       setInstanceFollowRedirects(true)
+       connectTimeout 15000, readTimeout 60000
+
+     Accept HTTP 200 (server ignored Range, restart from 0)
+            or HTTP 206 (server honored Range, resume)
+
+     Open RandomAccessFile on .partial, seek(startPos)
+     Loop: read 8192-byte chunks, write to RAF
+           every 250 ms call listener.onProgress(doi, downloaded, total)
+     On EOF: raf.getFD().sync(), close streams
+     Rename .partial → .pdf  (fallback: copy if rename fails)
+     tracker.markDownloaded(doi, title, target.getName())
+
+8.2  ProgressListener callbacks
+
+   onProgress(doi, downloaded, total)
+     Updates per-card label showing e.g. "1.2 MB / 3.4 MB"
+   onComplete(doi, savedFile)
+     Adds doi to downloadedDois set, refreshes adapters, shows toast
+   onError(doi, message)
+     Adds doi to failedDois set, refreshes adapters, shows toast
+
+8.3  Retrying a paused download
+
+   Downloader.listPausedDownloads() returns all *.pdf.partial files.
+   On retry the user may either:
+     - Paste the PDF URL directly (if known), OR
+     - Leave blank and the app re-resolves via SciHubClient.resolvePdf(doi)
+   The existing .partial file's byte position is reused as the Range
+   header start, so the download resumes from where it stopped.
+
+
+--------------------------------------------------------------------------------
+9. UI ARCHITECTURE
+--------------------------------------------------------------------------------
+
+Single Activity (MainActivity) using programmatic UI construction
+(no XML layouts). Root is a vertical LinearLayout:
+
+  ┌────────────────────────────────────────────────────┐
+  │ HEADER  (dark)                                     │
+  │   "Papers"  ...............  [Settings]            │
+  │   [DOI/URL input________] [→] [↻] [×]              │
+  │   RANDOM PAPERS · <count>                          │
+  ├────────────────────────────────────────────────────┤
+  │ CONTENT AREA (FrameLayout)                         │
+  │   Browse page    (ListView, 2-up rows)             │
+  │   Related page   (ListView, 2-up rows)             │
+  │   Downloads page (ScrollView, file rows)            │
+  │   Settings page  (ScrollView, form rows)            │
+  │   (only one visible at a time)                     │
+  ├────────────────────────────────────────────────────┤
+  │ TAB BAR (dark)                                     │
+  │   Browse  Related  Downloads  Settings              │
+  └────────────────────────────────────────────────────┘
+
+9.1  Color palette (Halo dark)
+
+   C_BG         0xFF0D0D0D   Background
+   C_BG_DARK    0xFF000000   Header / tab bar
+   C_CARD       0xFF1C1C1E   Card background
+   C_CARD_2     0xFF2C2C2E   Tag pill background
+   C_SEP        0xFF38383A   Separator
+   C_TEXT       0xFFFFFFFF   Primary text
+   C_TEXT_2     0xFF98989F   Secondary text
+   C_TEXT_3     0xFF636366   Tertiary text
+   C_BLUE       0xFF0A84FF   Accent / Download button
+   C_RED        0xFFFF453A   Downloaded indicator dot
+   C_GREEN      0xFF30D158   Open button (downloaded state)
+   C_ORANGE     0xFFFF9F0A   Resolving state button
+
+9.2  Browse page (infinite scroll)
+
+   ListView with PaperRowAdapter. getCount() returns (papers.size()+1)/2
+   so each row holds two paper cards side by side.
+
+   OnScroll: if firstVisibleItem + visibleItemCount >= totalItemCount - 4
+             AND not currently loading → fetchRandom(20) in background.
+
+   New papers are appended after deduplication by DOI.
+   "↻" button clears the list and reloads.
+
+9.3  Card layout
+
+   ┌──────────────────────────────────────┐
+   │ [YEAR] [●]                  [DL BTN] │  ← top row
+   │ Paper Title (3 lines max)             │
+   │ Authors (1 line, ellipsized)          │
+   │ Journal (italic, 1 line)              │
+   │ Abstract (truncated to 160 chars)     │
+   │ 10.xxxx/...                           │  ← DOI footer
+   └──────────────────────────────────────┘
+
+   Download button states:
+     "Download"  (blue)   — idle
+     "1.2 MB /…" (orange) — resolving or downloading
+     "Retry"     (red)    — failed
+     "Open"      (green)  — downloaded
+
+   Red dot appears in the top-left if downloadedDois.contains(doi).
+
+9.4  Search flow
+
+   Input accepted: bare DOI, doi.org URL, or sci-hub URL.
+   On submit:
+     parseDoiInput()  →  doi
+     lookupDoi(doi)   →  CrossRef metadata (added to related list)
+     fetchRelated(doi) →  /similar/<doi> from sci-hub (180+ papers)
+   Related list shows: [searched paper, ...filtered related].
+
+9.5  Downloads page
+
+   ScrollView listing:
+     "Paused — tap to retry" section
+       *.pdf.partial files  (with [Resume] button)
+     "Downloaded (N)" section
+       *.pdf files           (with [Open] button → ACTION_VIEW)
+
+9.6  Settings page
+
+   - Storage folder: shows current path, [Pick folder] button
+   - Sci-Hub domain: editable text, [Save domain] button
+   - Track files: shows path, file count, paper count, [Refresh] button
+
+9.7  Multi-select (long-press)
+
+   Long-press any card → enters selection mode.
+   A floating bar appears below the header with:
+     "Selected"  [Download selected] [Cancel]
+   "Download selected" iterates all selected positions and triggers
+   downloadPaper() for each. Long-press again to deselect.
+
+
+--------------------------------------------------------------------------------
+10. FIRST-LAUNCH FLOW
+--------------------------------------------------------------------------------
+
+  onCreate() checks tracker.isFolderChosen()
+    false → requestStoragePermissionAndPickFolder()
+              if API >= 30 && !isExternalStorageManager():
+                startActivityForResult(ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
+              else if API < 30 && !hasPermission(WRITE_EXTERNAL_STORAGE):
+                requestPermissions([READ,WRITE_EXTERNAL_STORAGE])
+              else:
+                openFolderPicker()
+                  → startActivityForResult(ACTION_OPEN_DOCUMENT_TREE)
+                    takePersistableUriPermission(treeUri, R|W)
+                    path = uriToFilePath(treeUri)
+                      // handles content://com.android.externalstorage.documents/tree/primary%3A...
+                    tracker.setRootFolder(path)
+                    tracker.ensureSubdirs()   (creates /track and /papers)
+                    loadRandomBatch()
+
+  onActivityResult():
+    REQ_ALL_FILES  →  openFolderPicker()
+    REQ_PICK_DIR   →  setRootFolder, ensureSubdirs, loadRandomBatch
+    (cancellation falls back to suggestDefaultRoot() =
+     Environment.DIRECTORY_DOCUMENTS/Papers)
+
+
+--------------------------------------------------------------------------------
+11. CONFIGURABLE SCI-HUB DOMAIN
+--------------------------------------------------------------------------------
+
+Because sci-hub mirrors come and go, the user can swap the domain at any
+time from the Settings tab. The setting is stored as a string with the
+protocol stripped:
+
+  TrackerStore.setDomain("https://sci-hub.se/")  →  "sci-hub.se"
+  TrackerStore.getBaseUrl()                       →  "https://sci-hub.se"
+
+On "Save domain" click, MainActivity rebuilds the SciHubClient:
+  client = new SciHubClient(tracker.getBaseUrl())
+
+All subsequent resolvePdf / fetchRelated calls hit the new domain.
+The captcha solver code is unchanged — it works against any sci-hub
+mirror that uses the altcha widget.
+
+
+--------------------------------------------------------------------------------
+12. PERMISSIONS REFERENCE
+--------------------------------------------------------------------------------
+
+  INTERNET                      Network calls (CrossRef, sci-hub)
+  ACCESS_NETWORK_STATE          Detect online/offline
+  READ_EXTERNAL_STORAGE         Read papers from /papers (API < 30)
+  WRITE_EXTERNAL_STORAGE        Write papers to /papers (API < 30)
+  MANAGE_EXTERNAL_STORAGE       Pick + write to any folder (API 30+)
+  FOREGROUND_SERVICE            (reserved for future background downloads)
+
+requestLegacyExternalStorage="true" in <application> tag — needed on
+API 29 so the legacy File API works without scoped storage.
+
+
+--------------------------------------------------------------------------------
+13. KEY CLASS METHODS
+--------------------------------------------------------------------------------
+
+TrackerStore
+  boolean isFolderChosen()
+  String  getRootFolder()
+  void    setRootFolder(String)
+  void    ensureSubdirs()                          creates /track and /papers
+  File    getTrackDir()                            → <root>/track
+  File    getPapersDir()                           → <root>/papers
+  String  getDomain()                              default: sci-hub.su
+  void    setDomain(String)
+  String  getBaseUrl()                             "https://" + domain
+  void    markDownloaded(doi, title, filename)
+  boolean isDownloaded(doi)
+  Set     getAllDownloadedDois()
+
+SciHubClient
+  SciHubClient(String baseUrl)
+  void resolvePdf(doi, Callback<Paper>)
+  void fetchRelated(doi, Callback<List<Paper>>)
+  void lookupDoi(doi, Callback<Paper>)              CrossRef
+  void fetchRandom(int n, Callback<List<Paper>>)    CrossRef sample
+  static String parseDoiInput(String)                bare DOI or URL → doi
+
+Downloader
+  Downloader(TrackerStore, ProgressListener)
+  void download(doi, title, pdfUrl)
+  void shutdown()
+  List<File> listPausedDownloads()
+  static String safeFilename(String doi)
+
+MainActivity
+  showTab(int tab)                                  switches bottom-tab page
+  buildCard(Paper, int position)                     returns a card view
+  toggleSelection(int position)                      long-press multi-select
+  downloadPaper(Paper)                               resolves + starts download
+  retryPaused(File partial)                         opens URL prompt
+
+
+--------------------------------------------------------------------------------
+14. APK VERIFICATION
+--------------------------------------------------------------------------------
+
+After build, verify with:
+
+  $JAVA_HOME/bin/java -jar $BUILD_TOOLS/lib/apksigner.jar verify -v Papers.apk
+    → Verifies
+    → Verified using v1 scheme (JAR signing): true
+    → Verified using v2 scheme (APK Signature Scheme v2): true
+    → Verified using v3 scheme (APK Signature Scheme v3): true
+
+  $BUILD_TOOLS/zipalign -c 4 Papers.apk                → exit 0
+
+  $BUILD_TOOLS/aapt dump badging Papers.apk
+    package: name='com.papers.app'
+    sdkVersion:'21'
+    targetSdkVersion:'30'
+    application-label:'Papers'
+    application-icon-160:'res/drawable/ic_launcher.xml'
+    launchable-activity: name='com.papers.app.MainActivity'
+
+  $BUILD_TOOLS/dexdump -l plain Papers.apk | grep "Class descriptor"
+    Lcom/papers/app/Downloader;
+    Lcom/papers/app/MainActivity;
+    Lcom/papers/app/SciHubClient;
+    Lcom/papers/app/TrackerStore;
+    (+ their inner classes)
+
+
+--------------------------------------------------------------------------------
+15. INSTALLATION
+--------------------------------------------------------------------------------
+
+Transfer Papers.apk to the Android device, then:
+
+  adb install Papers.apk
+
+Or open it in any file manager on the device (requires
+"Install unknown apps" permission for that file manager).
+
+On first launch the app requests storage permission and prompts for
+a folder. Until a folder is picked, no download or track operations
+are available.
+
+
+--------------------------------------------------------------------------------
+16. DEPENDENCIES
+--------------------------------------------------------------------------------
+
+External libraries: NONE.
+The APK links only against:
+  - android.jar (API 30) at compile time
+  - org.json (bundled in Android runtime) for JSON parsing
+  - android.util.Base64 (bundled in Android runtime)
+  - java.security.MessageDigest (bundled) for SHA-256
+  - java.net.HttpURLConnection (bundled) for HTTP
+  - java.io.RandomAccessFile (bundled) for resumable writes
+
+No Gradle. No Android Studio. No third-party JARs. No native code.
+
+
+--------------------------------------------------------------------------------
+17. FILE LOCATIONS
+--------------------------------------------------------------------------------
+
+  /home/z/my-project/download/Papers.apk              final APK
+  /home/z/my-project/android-app/                     source root
+  /home/z/my-project/android-app/build.sh             build script
+  /home/z/my-project/android-app/AndroidManifest.xml
+  /home/z/my-project/android-app/res/values/strings.xml
+  /home/z/my-project/android-app/res/values/colors.xml
+  /home/z/my-project/android-app/res/values/styles.xml
+  /home/z/my-project/android-app/res/drawable/ic_launcher.xml
+  /home/z/my-project/android-app/java/com/papers/app/MainActivity.java
+  /home/z/my-project/android-app/java/com/papers/app/TrackerStore.java
+  /home/z/my-project/android-app/java/com/papers/app/SciHubClient.java
+  /home/z/my-project/android-app/java/com/papers/app/Downloader.java
+  /home/z/my-project/android-app/build/papers.apk      build output
+
+
+--------------------------------------------------------------------------------
+END OF DOCUMENT
+--------------------------------------------------------------------------------
