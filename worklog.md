@@ -92,3 +92,24 @@ Stage Summary:
 - /classics fetch is now instant metadata (parallel CrossRef), not a slow download.
 - High-speed: single resolve+download ~1.8s, parallel bulk concurrency 30, optimized binary captcha solver, no rate limiting.
 - Dev server on port 3000, lint clean, browser-verified.
+
+---
+Task ID: 4
+Agent: main
+Task: Fix three problems: (1) full paper name not visible (truncated), (2) cannot scroll/move through papers on any mode, (3) related papers not loading on main-mode DOI search.
+
+Work Log:
+- Root cause #1 (full title): rows used whiteSpace:nowrap + textOverflow:ellipsis → truncated to one line. Fixed: whiteSpace:'normal', wordBreak:'break-word', removed overflow/lineClamp → full title wraps across lines.
+- Root cause #2 (no scroll): TWO bugs compounding:
+  (a) outer container used minHeight:100vh instead of height:100vh, so flex:1 + overflow:auto on children never engaged (no constrained height → no scroll container). Fixed: outer = height:100vh + overflow:hidden; single <main flex:1 minHeight:0 overflow:auto overscrollBehavior:contain> scroll container for all 3 modes; sticky input/textarea headers inside; selection bar moved to a flex item at the bottom (flexShrink:0).
+  (b) every row had touch-action:none which blocked touch-scrolling on mobile entirely. Fixed: touch-action:'pan-y' (allows vertical scroll) + onPointerMove cancels the long-press timer if pointer moves >10px (so a swipe scrolls, a hold still triggers long-press). Removed preventDefault on pointerdown.
+- Root cause #3 (related papers empty): fetchRelated was NOT capturing the Set-Cookie from the captcha solution POST (resolvePdf did, fetchRelated didn't). Without the verified-session cookie, the retry GET returned the captcha page again → parseSimilar found 0 article blocks. Diagnosed via a Python trace that mirrored the exact flow with an auto-cookiejar: captcha solve succeeded (n=75727, 0.05s, {success:true}), retry returned 164KB with 187 <a class="article"> blocks. The regex (class\s*=\s*"article") already handled the spaced attributes. Fixed: added `cookies = mergeCookies(cookies, r3)` after the solution POST in fetchRelated (mirroring resolvePdf).
+- Verified: search?doi=10.1146/annurev.soc.29.010202.100047&domains=sci-hub.su now returns paper + 187 related papers (Adolescent Development in Interpersonal and Societal Contexts | 2006, etc.). Search takes ~3.7s (captcha solve + 164KB similar page parse).
+- Removed all temporary console.error debug logs from fetchRelated after confirming.
+- Lint clean.
+
+Stage Summary:
+- 2 files touched: src/app/page.tsx (scroll container + full titles + pan-y touch), src/app/api/papers/route.ts (cookie capture fix in fetchRelated).
+- All 3 user problems solved: full paper names visible (wrap), scrolling works on all modes (main/classics/distances + related sub-list), related papers load (187 from sci-hub /similar after captcha solve).
+- Agent Browser (390×844 mobile): /distances scrollBy→1200 new rows; /classics fetch 4 DOIs→title rows; main search→rel→187 related rows, scrollBy→1500 shows more rows with full long titles.
+- Dev server on port 3000, lint clean, browser-verified end-to-end.

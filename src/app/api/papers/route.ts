@@ -249,7 +249,7 @@ async function fetchRelated(doi: string, baseUrl: string): Promise<Paper[]> {
         cookies = mergeCookies(cookies, r2)
         const ch = await r2.json()
         const { payload } = solveAltcha(ch)
-        await fetch(`${baseUrl}/captcha/solution/${id}`, {
+        const r3 = await fetch(`${baseUrl}/captcha/solution/${id}`, {
           method: 'POST',
           headers: {
             'User-Agent': UA, 'Content-Type': 'application/json', 'Accept': 'application/json',
@@ -257,6 +257,7 @@ async function fetchRelated(doi: string, baseUrl: string): Promise<Paper[]> {
           },
           body: JSON.stringify({ captcha: payload }),
         })
+        cookies = mergeCookies(cookies, r3)
         res = await fetch(similarUrl, {
           headers: { 'User-Agent': UA, 'Accept': 'text/html', Cookie: cookies, Referer: similarUrl },
         })

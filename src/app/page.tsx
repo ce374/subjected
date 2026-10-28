@@ -20,38 +20,46 @@ type Paper = {
 type DLState = 'idle' | 'resolving' | 'done' | 'failed'
 type Mode = 'main' | 'classics' | 'distances'
 
-// filename-style row — title + state button, nothing else
+// filename-style row — FULL title (wraps), state button, nothing else
 function PaperRow({ paper, state, error, selected, onDownload, onRelated, onPress, onClick }: {
   paper: Paper; state: DLState; error?: string; selected: boolean
   onDownload: () => void; onRelated?: () => void; onPress: (p: Paper) => void; onClick: (p: Paper) => void
 }) {
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const suppressed = useRef(false)
+  const sx = useRef(0), sy = useRef(0)
+  // start long-press timer; do NOT preventDefault (lets the browser scroll)
   const down = (e: React.PointerEvent) => {
-    e.preventDefault()
     suppressed.current = false
-    timer.current = setTimeout(() => { suppressed.current = true; onPress(paper) }, 380)
+    sx.current = e.clientX; sy.current = e.clientY
+    timer.current = setTimeout(() => { suppressed.current = true; onPress(paper) }, 450)
   }
-  const up = () => { if (timer.current) { clearTimeout(timer.current); timer.current = null } }
-  const leave = up
+  // cancel long-press if the pointer moves (i.e. user is scrolling)
+  const move = (e: React.PointerEvent) => {
+    if (!timer.current) return
+    if (Math.abs(e.clientX - sx.current) > 10 || Math.abs(e.clientY - sy.current) > 10) {
+      clearTimeout(timer.current); timer.current = null
+    }
+  }
+  const cancel = () => { if (timer.current) { clearTimeout(timer.current); timer.current = null } }
   const click = () => { if (suppressed.current) { suppressed.current = false; return } onClick(paper) }
   const btnColor = state === 'done' ? C.green : state === 'failed' ? C.red : state === 'resolving' ? C.orange : C.idle
   const btnLabel = state === 'done' ? 'open' : state === 'failed' ? '—' : state === 'resolving' ? '…' : 'get'
   return (
-    <div onPointerDown={down} onPointerUp={up} onPointerLeave={leave} onPointerCancel={up} onClick={click}
-      style={{ borderBottom: `1px solid ${C.border}`, background: selected ? C.selBg : C.bg, cursor: 'pointer', userSelect: 'none', WebkitUserSelect: 'none', touchAction: 'none' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '7px 9px' }}>
-        {selected && <span style={{ width: 6, height: 6, background: C.selBorder, borderRadius: 1, display: 'inline-block', flexShrink: 0 }} />}
-        <div style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12, color: C.text, lineHeight: 1.3 }}>{paper.title}</div>
+    <div onPointerDown={down} onPointerMove={move} onPointerUp={cancel} onPointerLeave={cancel} onPointerCancel={cancel} onClick={click}
+      style={{ borderBottom: `1px solid ${C.border}`, background: selected ? C.selBg : C.bg, cursor: 'pointer', userSelect: 'none', WebkitUserSelect: 'none', touchAction: 'pan-y' }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 7, padding: '7px 9px' }}>
+        {selected && <span style={{ width: 6, height: 6, background: C.selBorder, borderRadius: 1, display: 'inline-block', flexShrink: 0, marginTop: 5 }} />}
+        <div style={{ flex: 1, minWidth: 0, fontSize: 12, color: C.text, lineHeight: 1.35, wordBreak: 'break-word', whiteSpace: 'normal' }}>{paper.title}</div>
         {onRelated && state !== 'resolving' && (
           <button onClick={(e) => { e.stopPropagation(); onRelated() }}
-            style={{ background: 'transparent', color: C.muted, border: `1px solid ${C.border}`, padding: '2px 5px', fontSize: 10, cursor: 'pointer', borderRadius: R.btn, fontFamily: mono, flexShrink: 0 }}>rel</button>
+            style={{ background: 'transparent', color: C.muted, border: `1px solid ${C.border}`, padding: '2px 5px', fontSize: 10, cursor: 'pointer', borderRadius: R.btn, fontFamily: mono, flexShrink: 0, marginTop: 1 }}>rel</button>
         )}
         <button onClick={(e) => { e.stopPropagation(); onDownload() }} disabled={state === 'resolving'}
-          style={{ background: btnColor, color: '#fff', border: 'none', padding: '2px 6px', fontSize: 10, cursor: state === 'resolving' ? 'default' : 'pointer', borderRadius: R.btn, fontFamily: mono, flexShrink: 0, opacity: state === 'resolving' ? 0.5 : 1, minWidth: 26 }}>{btnLabel}</button>
+          style={{ background: btnColor, color: '#fff', border: 'none', padding: '2px 6px', fontSize: 10, cursor: state === 'resolving' ? 'default' : 'pointer', borderRadius: R.btn, fontFamily: mono, flexShrink: 0, marginTop: 1, opacity: state === 'resolving' ? 0.5 : 1, minWidth: 26 }}>{btnLabel}</button>
       </div>
       {state === 'failed' && error && (
-        <div style={{ padding: '0 9px 5px', fontSize: 10, color: C.red, lineHeight: 1.3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{error}</div>
+        <div style={{ padding: '0 9px 5px', fontSize: 10, color: C.red, lineHeight: 1.3, wordBreak: 'break-word' }}>{error}</div>
       )}
     </div>
   )
@@ -120,7 +128,7 @@ export default function Home() {
       const res = await fetch('/api/papers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'download', doi: paper.doi, title: paper.title, domains }) })
       const data = await res.json()
       if (data.success) { setDl(paper.doi, 'done'); showToast(`got ${data.filename}`) }
-      else setDl(paper.doi, 'failed', `${data.reason || 'failed'}: ${data.error || ''}`.slice(0, 140))
+      else setDl(paper.doi, 'failed', `${data.reason || 'failed'}: ${data.error || ''}`.slice(0, 160))
     } catch (e: any) { setDl(paper.doi, 'failed', e?.message || String(e)) }
   }
 
@@ -147,7 +155,7 @@ export default function Home() {
             else if (ev.type === 'done') { showToast(`done: ${ev.succeeded}/${ev.total}`) }
             else if (ev.doi) {
               if (ev.success) { setDl(ev.doi, 'done'); if (mode === 'loose' && ev.filename) openFile(ev.filename) }
-              else setDl(ev.doi, 'failed', `${ev.reason || 'failed'}: ${ev.error || ''}`.slice(0, 140))
+              else setDl(ev.doi, 'failed', `${ev.reason || 'failed'}: ${ev.error || ''}`.slice(0, 160))
             }
           } catch {}
         }
@@ -155,7 +163,7 @@ export default function Home() {
     } catch (e: any) { showToast(e?.message || String(e)) }
   }
 
-  // main: search → CrossRef lookup + related (parallel-ish, related after lookup)
+  // main: search → CrossRef lookup + related
   const search = async () => {
     const doi = parseDoi(input)
     if (!doi) { showToast('no doi'); return }
@@ -180,8 +188,8 @@ export default function Home() {
       const res = await fetch('/api/papers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'lookup-bulk', dois: capped }) })
       const data = await res.json()
       if (data.papers) setBulkPapers(data.papers)
-      const missing = capped.length - (data.papers?.length || 0)
-      if (missing > 0) showToast(`${data.papers?.length || 0}/${capped.length} found`)
+      const found = data.papers?.length || 0
+      if (found < capped.length) showToast(`${found}/${capped.length} found`)
     } catch (e) { showToast(e as string) }
     finally { setBulkLooking(false) }
   }
@@ -200,7 +208,7 @@ export default function Home() {
   useEffect(() => { if (mode === 'distances' && rand.length === 0) loadRandom(30) }, [mode, rand.length, loadRandom])
   useEffect(() => {
     const el = randEnd.current; if (!el || mode !== 'distances') return
-    const obs = new IntersectionObserver(e => { if (e[0].isIntersecting && !loadingRand) loadRandom(30) }, { rootMargin: '600px' })
+    const obs = new IntersectionObserver(e => { if (e[0].isIntersecting && !loadingRand) loadRandom(30) }, { root: null, rootMargin: '600px' })
     obs.observe(el); return () => obs.disconnect()
   }, [loadingRand, loadRandom, mode])
 
@@ -233,12 +241,13 @@ export default function Home() {
       onDownload={() => singleDownload(p)} onRelated={opts.related} onPress={onPress} onClick={onCardClick} />
   )
 
-  const listWrap: React.CSSProperties = { flex: 1, overflow: 'auto', maxWidth: 720, margin: '0 auto', width: '100%' }
+  const inner: React.CSSProperties = { maxWidth: 720, margin: '0 auto', width: '100%' }
+  const stickyHead: React.CSSProperties = { position: 'sticky', top: 0, background: C.bg, zIndex: 5, borderBottom: `1px solid ${C.border}`, flexShrink: 0 }
 
   return (
-    <div style={{ minHeight: '100vh', background: C.bg, color: C.text, fontFamily: mono, display: 'flex', flexDirection: 'column' }}>
+    <div style={{ height: '100vh', background: C.bg, color: C.text, fontFamily: mono, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       {/* top bar — tiny, no name, no nav */}
-      <header style={{ display: 'flex', gap: 5, padding: '6px 8px', borderBottom: `1px solid ${C.borderStrong}`, position: 'sticky', top: 0, background: C.bg, zIndex: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+      <header style={{ display: 'flex', gap: 5, padding: '6px 8px', borderBottom: `1px solid ${C.borderStrong}`, background: C.bg, zIndex: 10, flexShrink: 0, flexWrap: 'wrap', alignItems: 'center' }}>
         <button style={btnStyle(mode === 'main')} onClick={() => setMode('main')}>main</button>
         <button style={btnStyle(mode === 'classics')} onClick={() => setMode('classics')}>/classics</button>
         <button style={btnStyle(mode === 'distances')} onClick={() => setMode('distances')}>/distances</button>
@@ -247,63 +256,60 @@ export default function Home() {
         <button style={btnStyle()} onClick={() => { setShowTrack(true); loadTrack() }}>track</button>
       </header>
 
-      {/* MAIN */}
-      {mode === 'main' && (
-        <div style={{ padding: '6px 8px', display: 'flex', flexDirection: 'column', gap: 6, flex: 1, maxWidth: 720, margin: '0 auto', width: '100%' }}>
-          <div style={{ display: 'flex', gap: 5 }}>
-            <input value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') search() }}
-              placeholder="doi or url"
-              style={{ flex: 1, background: C.surface, color: C.text, border: `1px solid ${C.borderStrong}`, padding: '5px 7px', fontSize: 11, borderRadius: R.btn, outline: 'none', fontFamily: mono }} />
-            <button style={{ ...btnStyle(searching), minWidth: 36 }} onClick={search} disabled={searching}>{searching ? '…' : 'go'}</button>
-          </div>
-          <div style={{ flex: 1, overflow: 'auto', borderTop: `1px solid ${C.border}` }}>
+      {/* single scroll container for all modes */}
+      <main style={{ flex: 1, minHeight: 0, overflow: 'auto', overscrollBehavior: 'contain' }}>
+        {mode === 'main' && (
+          <div style={inner}>
+            <div style={{ ...stickyHead, padding: '6px 8px', display: 'flex', gap: 5 }}>
+              <input value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') search() }}
+                placeholder="doi or url"
+                style={{ flex: 1, background: C.surface, color: C.text, border: `1px solid ${C.borderStrong}`, padding: '5px 7px', fontSize: 11, borderRadius: R.btn, outline: 'none', fontFamily: mono }} />
+              <button style={{ ...btnStyle(searching), minWidth: 36 }} onClick={search} disabled={searching}>{searching ? '…' : 'go'}</button>
+            </div>
             {searched && renderRow(searched, { related: () => setShowRelated(true) })}
             {showRelated && related.length > 0 && (
               <div>
-                <div style={{ padding: '5px 9px', color: C.dim, fontSize: 10, borderBottom: `1px solid ${C.border}` }}>related·{related.length}</div>
+                <div style={{ padding: '5px 9px', color: C.dim, fontSize: 10, borderBottom: `1px solid ${C.border}`, background: C.bg }}>related·{related.length}</div>
                 {related.map(p => renderRow(p))}
               </div>
             )}
             {searching && <div style={{ padding: 14, color: C.muted, fontSize: 11, textAlign: 'center' }}>…</div>}
             {!searched && !searching && <div style={{ padding: 14, color: C.dim, fontSize: 11, textAlign: 'center' }}>—</div>}
           </div>
-        </div>
-      )}
+        )}
 
-      {/* CLASSICS */}
-      {mode === 'classics' && (
-        <div style={{ display: 'flex', flexDirection: 'column', flex: 1, maxWidth: 720, margin: '0 auto', width: '100%' }}>
-          <div style={{ padding: '6px 8px', display: 'flex', flexDirection: 'column', gap: 5 }}>
-            <textarea value={bulkText} onChange={e => setBulkText(e.target.value)} placeholder={'doi|\ndoi|'}
-              style={{ width: '100%', minHeight: 70, background: C.surface, color: C.text, border: `1px solid ${C.borderStrong}`, padding: '5px 7px', fontSize: 11, borderRadius: R.btn, outline: 'none', fontFamily: mono, resize: 'vertical' }} />
-            <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
-              <button style={btnStyle(bulkLooking)} onClick={fetchBulk} disabled={bulkLooking}>{bulkLooking ? '…' : 'fetch'}</button>
-              {bulkPapers.length > 0 && <>
-                <button style={btnStyle()} onClick={() => requestZip(bulkPapers)}>all·zip</button>
-                <button style={btnStyle()} onClick={() => bulkDownload(bulkPapers, 'loose')}>all·loose</button>
-              </>}
-              {bulkPapers.length > 0 && <span style={{ color: C.dim, fontSize: 10, alignSelf: 'center' }}>{bulkPapers.length}</span>}
+        {mode === 'classics' && (
+          <div style={inner}>
+            <div style={{ ...stickyHead, padding: '6px 8px', display: 'flex', flexDirection: 'column', gap: 5 }}>
+              <textarea value={bulkText} onChange={e => setBulkText(e.target.value)} placeholder={'doi|\ndoi|'}
+                style={{ width: '100%', minHeight: 60, background: C.surface, color: C.text, border: `1px solid ${C.borderStrong}`, padding: '5px 7px', fontSize: 11, borderRadius: R.btn, outline: 'none', fontFamily: mono, resize: 'vertical' }} />
+              <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', alignItems: 'center' }}>
+                <button style={btnStyle(bulkLooking)} onClick={fetchBulk} disabled={bulkLooking}>{bulkLooking ? '…' : 'fetch'}</button>
+                {bulkPapers.length > 0 && <>
+                  <button style={btnStyle()} onClick={() => requestZip(bulkPapers)}>all·zip</button>
+                  <button style={btnStyle()} onClick={() => bulkDownload(bulkPapers, 'loose')}>all·loose</button>
+                </>}
+                {bulkPapers.length > 0 && <span style={{ color: C.dim, fontSize: 10 }}>{bulkPapers.length}</span>}
+              </div>
             </div>
-          </div>
-          <div style={{ flex: 1, overflow: 'auto', borderTop: `1px solid ${C.border}` }}>
             {bulkPapers.map(p => renderRow(p))}
+            {bulkLooking && <div style={{ padding: 14, color: C.muted, fontSize: 11, textAlign: 'center' }}>…</div>}
             {bulkPapers.length === 0 && !bulkLooking && <div style={{ padding: 14, color: C.dim, fontSize: 11, textAlign: 'center' }}>—</div>}
           </div>
-        </div>
-      )}
+        )}
 
-      {/* DISTANCES */}
-      {mode === 'distances' && (
-        <div style={listWrap}>
-          {rand.map(p => renderRow(p, { related: () => { setInput(p.doi); setMode('main') } }))}
-          {loadingRand && <div style={{ padding: 12, color: C.muted, fontSize: 11, textAlign: 'center' }}>…</div>}
-          <div ref={randEnd} style={{ height: 1 }} />
-        </div>
-      )}
+        {mode === 'distances' && (
+          <div style={inner}>
+            {rand.map(p => renderRow(p, { related: () => { setInput(p.doi); setMode('main') } }))}
+            {loadingRand && <div style={{ padding: 12, color: C.muted, fontSize: 11, textAlign: 'center' }}>…</div>}
+            <div ref={randEnd} style={{ height: 1 }} />
+          </div>
+        )}
+      </main>
 
-      {/* selection bar */}
+      {/* selection bar — flex item at bottom, stays put */}
       {selecting && (
-        <div style={{ position: 'sticky', bottom: 0, background: C.surface, borderTop: `1px solid ${C.borderStrong}`, padding: '6px 8px', display: 'flex', gap: 5, alignItems: 'center', flexWrap: 'wrap', zIndex: 10 }}>
+        <div style={{ background: C.surface, borderTop: `1px solid ${C.borderStrong}`, padding: '6px 8px', display: 'flex', gap: 5, alignItems: 'center', flexWrap: 'wrap', flexShrink: 0, zIndex: 10 }}>
           <span style={{ color: C.text, fontSize: 10 }}>{selected.size}·sel</span>
           <div style={{ flex: 1 }} />
           <button style={btnStyle()} disabled={selected.size === 0} onClick={() => bulkDownload(selectedPapers(allPapers()), 'loose')}>loose</button>
