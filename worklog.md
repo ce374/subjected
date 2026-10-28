@@ -59,3 +59,36 @@ Stage Summary:
 - All requested behaviors implemented: 3 modes, long-press multi-select, zip naming, multi-domain fallback, batched track JSON + backup, parallel streaming bulk (concurrency 25, no rate limit), classified error reasons, optimized binary captcha solver.
 - Ink dark theme, slight border radius (6/4px), custom CSS, no name/footer/nav.
 - Dev server running on port 3000, lint clean, all core flows browser-verified.
+
+---
+Task ID: 3
+Agent: main
+Task: Switch to light mode, filename-style rows (title only, nothing else), shrink everything tiny for mobile, fix /classics fetch to be fast parallel metadata lookup (not download), keep high-speed parallel download + faster resolving.
+
+Work Log:
+- Rewrote src/app/page.tsx:
+  * Light palette: bg #ffffff, surface #ffffff, border #ececec, text #111, muted #6a, dim #9a. State colors: idle #111, orange #c2410c, green #16a34a, red #dc2626.
+  * Replaced PaperCard with PaperRow — filename-style single-line: [sel-dot] title (ellipsis, nowrap) [rel?] [state-btn]. NO year, authors, journal, abstract, or DOI. Failed rows show a tiny red reason line below.
+  * Shrunk everything for mobile: top bar buttons padding 3px 7px fontSize 10, input padding 5px 7px fontSize 11, rows padding 7px 9px fontSize 12, state buttons padding 2px 6px fontSize 10, modals padding 11px fontSize 10-11.
+  * Single-column dense list (max-width 720, centered) across all 3 modes — many rows fit on a 390px mobile screen.
+  * Fixed /classics fetch: now calls POST {action:'lookup-bulk', dois:[...]} → parallel CrossRef metadata only (NO download). Download still via per-row "get" or "all·loose"/"all·zip" (streaming bulk).
+  * Long-press (380ms) → selection mode; selection bar [loose][zip][×]; zip-name dialog unchanged.
+  * Domains modal + track modal restyled light/tiny. Toast = dark pill on white.
+- Backend src/app/api/papers/route.ts:
+  * Added POST {action:'lookup-bulk', dois:[...]} → pool(dois, LOOKUP_CONCURRENCY=12, lookupDoi) → {papers, count, requested}. Caps at 600.
+  * Bumped CONCURRENCY 25 → 30 for streaming bulk downloads (no rate limiting).
+  * Optimized binary captcha solver + multi-domain fallback unchanged (already fast).
+- globals.css: light scrollbar (#d4d4d4 thumb).
+- Lint clean (0 errors, 0 warnings).
+- Agent Browser (390×844 mobile viewport):
+  * /distances: 30 compact filename rows rendered (title only + rel/get), many fit on screen, light bg.
+  * /classics: pasted 4 DOIs → fetch returned 2 title-only rows in <1s (parallel lookup-bulk POST 680ms).
+  * single download on a classics paper: get → open in 1.8s (POST 200 in 1779ms) — high-speed resolve+download confirmed.
+  * No console/runtime errors.
+
+Stage Summary:
+- 3 files touched: page.tsx (full rewrite), api/papers/route.ts (+lookup-bulk, concurrency 30), globals.css (light scrollbar).
+- Light mode, filename-style rows (title + state button only), tiny mobile-sized UI.
+- /classics fetch is now instant metadata (parallel CrossRef), not a slow download.
+- High-speed: single resolve+download ~1.8s, parallel bulk concurrency 30, optimized binary captcha solver, no rate limiting.
+- Dev server on port 3000, lint clean, browser-verified.

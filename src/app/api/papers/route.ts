@@ -13,7 +13,8 @@ const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 const DOWNLOAD_DIR = '/home/z/my-project/download'
 const TRACK_DIR = path.join(DOWNLOAD_DIR, 'track')
 const TRACK_BATCH = 100
-const CONCURRENCY = 25
+const CONCURRENCY = 30
+const LOOKUP_CONCURRENCY = 12
 
 type Paper = {
   doi: string; title: string; journal?: string
@@ -480,6 +481,14 @@ export async function POST(req: NextRequest) {
       if (!r.success) return NextResponse.json({ success: false, reason: 'DOWNLOAD_FAILED', error: r.error })
       await markDownloaded(doi, body.title || doi, r.filename)
       return NextResponse.json({ success: true, filename: r.filename, domain, size: r.size })
+    }
+
+    // parallel CrossRef metadata lookup (for /classics fetch — fast, no download)
+    if (body.action === 'lookup-bulk') {
+      const dois: string[] = (Array.isArray(body.dois) ? body.dois : []).map((d: string) => parseDoiInput(d)).filter(Boolean).slice(0, 600)
+      const results = await pool(dois, LOOKUP_CONCURRENCY, lookupDoi)
+      const papers = results.filter((p): p is Paper => !!p && !!p.doi)
+      return NextResponse.json({ papers, count: papers.length, requested: dois.length })
     }
 
     // bulk parallel — streaming NDJSON

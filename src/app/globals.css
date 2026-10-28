@@ -121,9 +121,9 @@
   }
 }
 
-/* ===== Ink scrollbar (SUBJECTED v2) ===== */
-::-webkit-scrollbar { width: 8px; height: 8px; }
+/* ===== Light scrollbar (clean light mode) ===== */
+::-webkit-scrollbar { width: 7px; height: 7px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: #3a3a3a; }
-* { scrollbar-width: thin; scrollbar-color: #2a2a2a transparent; }
+::-webkit-scrollbar-thumb { background: #d4d4d4; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #b0b0b0; }
+* { scrollbar-width: thin; scrollbar-color: #d4d4d4 transparent; }
